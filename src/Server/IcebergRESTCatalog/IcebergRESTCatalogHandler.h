@@ -3,6 +3,7 @@
 #include <Interpreters/Context_fwd.h>
 #include <Server/HTTP/HTTPRequestHandler.h>
 #include <Server/IcebergRESTCatalog/IcebergRESTCatalogWarehouse.h>
+#include <Server/IcebergRESTCatalog/KeeperIcebergRESTCatalogStore.h>
 #include <Server/IcebergRESTCatalog/IcebergRESTCatalogRouter.h>
 #include <Common/logger_useful.h>
 
@@ -33,9 +34,12 @@ private:
 
     void handleGetConfig(const Poco::URI & uri, HTTPServerResponse & response) const;
     void handleListNamespaces(const IcebergRESTCatalogWarehouse & warehouse, const Poco::URI & uri, HTTPServerResponse & response) const;
-    /// Rejects `readonly` profiles.
     void handleCreateNamespace(const IcebergRESTCatalogWarehouse & warehouse, HTTPServerRequest & request, HTTPServerResponse & response, const Context & context) const;
     void handleNamespaceExists(const IcebergRESTCatalogWarehouse & warehouse, const IcebergRESTRouteMatch & match, HTTPServerResponse & response) const;
+    void handleUpdateNamespaceProperties(const IcebergRESTCatalogWarehouse & warehouse, const IcebergRESTRouteMatch & match, HTTPServerRequest & request, HTTPServerResponse & response, const Context & context) const;
+
+    /// V1 has no privilege model, so mirror the settings that `ContextAccess` enforces for SQL DDL.
+    static void checkDDLAllowed(const Context & context, const String & action);
 
     /// Reads the whole request body. Returns nullopt after answering 413 if the body exceeds max_size.
     static std::optional<String> readRequestBody(HTTPServerRequest & request, HTTPServerResponse & response, size_t max_size);
@@ -43,6 +47,7 @@ private:
     static void sendJSON(HTTPServerResponse & response, const Poco::JSON::Object & json, Poco::Net::HTTPResponse::HTTPStatus status);
     static void sendError(
         HTTPServerResponse & response, Poco::Net::HTTPResponse::HTTPStatus status, const String & type, const String & message);
+    static void sendNoSuchNamespace(HTTPServerResponse & response, const IcebergNamespaceName & name);
 
     LoggerPtr log;
     IServer & server;

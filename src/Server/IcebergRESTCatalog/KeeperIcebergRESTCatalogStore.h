@@ -7,6 +7,8 @@
 
 #include <map>
 #include <memory>
+#include <optional>
+#include <set>
 #include <vector>
 
 namespace DB
@@ -14,6 +16,14 @@ namespace DB
 
 /// Support multi-level namespace names.
 using IcebergNamespaceName = std::vector<String>;
+
+struct UpdateNamespacePropertiesResult
+{
+    Strings updated;
+    Strings removed;
+    /// Keys from `removals` that were not present.
+    Strings missing;
+};
 
 /// Storage backend of the native Iceberg REST catalog (RFC: issue #114697), backed by Keeper.
 /// Work in progress, not ready for production use.
@@ -32,6 +42,11 @@ public:
     bool createNamespace(const IcebergNamespaceName & name, const std::map<String, String> & properties);
 
     bool namespaceExists(const IcebergNamespaceName & name) const;
+
+    /// Applies `removals` first, then `updates`. Properties not named in the request stay unchanged.
+    /// Returns nullopt if the namespace does not exist.
+    std::optional<UpdateNamespacePropertiesResult> updateNamespaceProperties(
+        const IcebergNamespaceName & name, const std::map<String, String> & updates, const std::set<String> & removals);
 
     /// Lists direct children of `parent` or top-level namespaces when `parent` is empty.
     std::vector<IcebergNamespaceName> listNamespaces(const IcebergNamespaceName & parent) const;

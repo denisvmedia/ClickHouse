@@ -101,6 +101,24 @@ def create_namespace(name_levels, properties=None, expected_code=200):
     )
 
 
+def update_namespace_properties(
+    name_levels, updates=None, removals=None, expected_code=200, auth=DEFAULT_AUTH
+):
+    body = {}
+    if updates is not None:
+        body["updates"] = updates
+    if removals is not None:
+        body["removals"] = removals
+    namespace = "\x1f".join(name_levels)
+    return catalog_request(
+        "POST",
+        f"/v1/my_warehouse/namespaces/{namespace}/properties",
+        json=body,
+        expected_code=expected_code,
+        auth=auth,
+    )
+
+
 def list_namespaces(parent=None):
     params = {"parent": parent} if parent is not None else None
     response = catalog_request("GET", "/v1/my_warehouse/namespaces", params=params)
@@ -119,6 +137,7 @@ def test_config(started_cluster):
         "GET /v1/{prefix}/namespaces",
         "POST /v1/{prefix}/namespaces",
         "HEAD /v1/{prefix}/namespaces/{namespace}",
+        "POST /v1/{prefix}/namespaces/{namespace}/properties",
     ]
 
     response = catalog_request("GET", "/v1/config", expected_code=400)
@@ -203,6 +222,77 @@ def test_namespace_exists(started_cluster):
     response = requests.head(catalog_url("/v1/my_warehouse/namespaces/missing"))
     assert response.status_code == 404, response.text
     assert response.text == ""
+
+
+def test_update_namespace_properties(started_cluster):
+    ns = f"props_{uuid.uuid4().hex[:8]}"
+    create_namespace([ns], properties={"owner": "asya", "a": "1", "b": "2"})
+
+    response = update_namespace_properties(
+        [ns], updates={"owner": "bob", "c": "3"}, removals=["a", "zzz"]
+    )
+    result = response.json()
+    assert sorted(result["updated"]) == ["c", "owner"]
+    assert result["removed"] == ["a"]
+    assert result["missing"] == ["zzz"]
+
+    # TODO: once the load-namespace endpoint is in master, read the properties through GET instead.
+    zk = get_keeper()
+    assert (
+        zk.get(f"{KEEPER_ROOT}/namespaces/{ns}")[0]
+        == b'{"b":"2","c":"3","owner":"bob"}'
+    )
+
+    # Multi-level namespaces are addressed the same way as in HEAD.
+    create_namespace([ns, "eu"], properties={"region": "eu"})
+    response = update_namespace_properties([ns, "eu"], removals=["region"])
+    assert response.json() == {"updated": [], "removed": ["region"], "missing": []}
+    assert zk.get(f"{KEEPER_ROOT}/namespaces/{ns}/namespaces/eu")[0] == b"{}"
+
+    response = update_namespace_properties([ns])
+    assert response.json() == {"updated": [], "removed": [], "missing": []}
+
+    response = update_namespace_properties(
+        [ns], updates={"owner": "x"}, removals=["owner"], expected_code=422
+    )
+    assert_error_shape(response, "UnprocessableEntityException")
+
+    response = update_namespace_properties(
+        ["missing"], updates={"owner": "x"}, expected_code=404
+    )
+    assert_error_shape(response, "NoSuchNamespaceException")
+
+    for body in [{"updates": "x"}, {"removals": "x"}, {"updates": {"k": 1}}, []]:
+        response = requests.post(
+            catalog_url(f"/v1/my_warehouse/namespaces/{ns}/properties"), json=body
+        )
+        assert response.status_code == 400, response.text
+        assert_error_shape(response, "BadRequestException")
+
+    # The limit applies to the merged result, not to the request.
+    response = update_namespace_properties(
+        [ns], updates={"big": "x" * (64 * 1024)}, expected_code=400
+    )
+    assert_error_shape(response, "BadRequestException")
+    assert (
+        zk.get(f"{KEEPER_ROOT}/namespaces/{ns}")[0]
+        == b'{"b":"2","c":"3","owner":"bob"}'
+    )
+
+
+def test_update_namespace_properties_rejects_readonly(started_cluster):
+    ns = f"props_forbidden_{uuid.uuid4().hex[:8]}"
+    create_namespace([ns], properties={"owner": "asya"})
+
+    for user, word in [("readonly_user", "readonly"), ("no_ddl_user", "DDL")]:
+        response = update_namespace_properties(
+            [ns], updates={"owner": "bob"}, auth=(user, ""), expected_code=403
+        )
+        assert_error_shape(response, "ForbiddenException")
+        assert word in response.json()["error"]["message"]
+
+    zk = get_keeper()
+    assert zk.get(f"{KEEPER_ROOT}/namespaces/{ns}")[0] == b'{"owner":"asya"}'
 
 
 def test_malformed_create_namespace(started_cluster):
@@ -323,32 +413,21 @@ def test_create_namespace_rejects_readonly(started_cluster):
     ns = f"forbidden_{uuid.uuid4().hex[:8]}"
     body = {"namespace": [ns]}
 
-    # Reading is allowed for everyone who can log in.
-    catalog_request("GET", "/v1/my_warehouse/namespaces", auth=("readonly_user", ""))
-
-    response = catalog_request(
-        "POST",
-        "/v1/my_warehouse/namespaces",
-        json=body,
-        auth=("readonly_user", ""),
-        expected_code=403,
-    )
-    assert_error_shape(response, "ForbiddenException")
-    assert "readonly" in response.json()["error"]["message"]
-    assert [ns] not in list_namespaces()
-
     # `allow_ddl = 0` permits writes but not structural changes, and a namespace is structure.
-    catalog_request("GET", "/v1/my_warehouse/namespaces", auth=("no_ddl_user", ""))
-    response = catalog_request(
-        "POST",
-        "/v1/my_warehouse/namespaces",
-        json=body,
-        auth=("no_ddl_user", ""),
-        expected_code=403,
-    )
-    assert_error_shape(response, "ForbiddenException")
-    assert "DDL" in response.json()["error"]["message"]
-    assert [ns] not in list_namespaces()
+    for user, word in [("readonly_user", "readonly"), ("no_ddl_user", "DDL")]:
+        # Reading is allowed for everyone who can log in.
+        catalog_request("GET", "/v1/my_warehouse/namespaces", auth=(user, ""))
+
+        response = catalog_request(
+            "POST",
+            "/v1/my_warehouse/namespaces",
+            json=body,
+            auth=(user, ""),
+            expected_code=403,
+        )
+        assert_error_shape(response, "ForbiddenException")
+        assert word in response.json()["error"]["message"]
+        assert [ns] not in list_namespaces()
 
     create_namespace([ns])
     assert [ns] in list_namespaces()

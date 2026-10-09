@@ -25,6 +25,8 @@
 #include <boost/algorithm/string/split.hpp>
 #include <fmt/ranges.h>
 
+#include <algorithm>
+#include <set>
 #include <sstream>
 
 namespace DB
@@ -51,11 +53,10 @@ namespace ErrorCodes
 namespace
 {
 
-constexpr size_t MAX_NAMESPACE_CREATE_BODY_SIZE = 1_MiB;
-/// Keeper limits path depth and node data size. Reject oversized requests here with 400 instead of a Keeper error.
+constexpr size_t MAX_REQUEST_BODY_SIZE = 1_MiB;
+/// Keeper limits path depth. Reject oversized requests here with 400 instead of a Keeper error.
 constexpr size_t MAX_NAMESPACE_LEVELS = 16;
 constexpr size_t MAX_NAMESPACE_LEVEL_LENGTH = 256;
-constexpr size_t MAX_NAMESPACE_PROPERTIES_SIZE = 64_KiB;
 constexpr char NAMESPACE_LEVEL_SEPARATOR = '\x1F';
 
 /// The handler maps `BAD_ARGUMENTS` to a 400 response.
@@ -87,11 +88,11 @@ String joinNamespace(const IcebergNamespaceName & name)
     return fmt::format("{}", fmt::join(name, "."));
 }
 
-Poco::JSON::Array namespaceToJSON(const IcebergNamespaceName & name)
+Poco::JSON::Array stringsToJSONArray(const Strings & strings)
 {
     Poco::JSON::Array result;
-    for (const auto & level : name)
-        result.add(level);
+    for (const auto & value : strings)
+        result.add(value);
     return result;
 }
 
@@ -179,6 +180,15 @@ void IcebergRESTCatalogHandler::sendError(
     sendJSON(response, result, status);
 }
 
+void IcebergRESTCatalogHandler::sendNoSuchNamespace(HTTPServerResponse & response, const IcebergNamespaceName & name)
+{
+    sendError(
+        response,
+        Poco::Net::HTTPResponse::HTTP_NOT_FOUND,
+        "NoSuchNamespaceException",
+        fmt::format("Namespace does not exist: {}", joinNamespace(name)));
+}
+
 void IcebergRESTCatalogHandler::handleRequest(HTTPServerRequest & request, HTTPServerResponse & response, const ProfileEvents::Event &)
 {
     try
@@ -252,6 +262,9 @@ void IcebergRESTCatalogHandler::handleRequest(HTTPServerRequest & request, HTTPS
                 return;
             case IcebergRESTOperation::NamespaceExists:
                 handleNamespaceExists(*warehouse, *match, response);
+                return;
+            case IcebergRESTOperation::UpdateNamespaceProperties:
+                handleUpdateNamespaceProperties(*warehouse, *match, request, response, *context);
                 return;
             default:
                 sendError(
@@ -362,18 +375,14 @@ void IcebergRESTCatalogHandler::handleListNamespaces(const IcebergRESTCatalogWar
         parent = splitNamespace(*parent_param);
         if (!warehouse.store->namespaceExists(parent))
         {
-            sendError(
-                response,
-                Poco::Net::HTTPResponse::HTTP_NOT_FOUND,
-                "NoSuchNamespaceException",
-                fmt::format("Namespace does not exist: {}", joinNamespace(parent)));
+            sendNoSuchNamespace(response, parent);
             return;
         }
     }
 
     Poco::JSON::Array namespaces;
     for (const auto & name : warehouse.store->listNamespaces(parent))
-        namespaces.add(namespaceToJSON(name));
+        namespaces.add(stringsToJSONArray(name));
 
     Poco::JSON::Object result;
     result.set("namespaces", namespaces);
@@ -385,11 +394,7 @@ void IcebergRESTCatalogHandler::handleNamespaceExists(const IcebergRESTCatalogWa
     const auto name = splitNamespace(match.path_params.at("namespace"));
     if (!warehouse.store->namespaceExists(name))
     {
-        sendError(
-            response,
-            Poco::Net::HTTPResponse::HTTP_NOT_FOUND,
-            "NoSuchNamespaceException",
-            fmt::format("Namespace does not exist: {}", joinNamespace(name)));
+        sendNoSuchNamespace(response, name);
         return;
     }
 
@@ -398,16 +403,20 @@ void IcebergRESTCatalogHandler::handleNamespaceExists(const IcebergRESTCatalogWa
     response.send();
 }
 
-void IcebergRESTCatalogHandler::handleCreateNamespace(const IcebergRESTCatalogWarehouse & warehouse, HTTPServerRequest & request, HTTPServerResponse & response, const Context & context) const
+void IcebergRESTCatalogHandler::checkDDLAllowed(const Context & context, const String & action)
 {
-    /// V1 has no privilege model, so mirror the settings that `ContextAccess` enforces for SQL DDL.
     const auto & settings = context.getSettingsRef();
     if (settings[Setting::readonly])
-        throw Exception(ErrorCodes::READONLY, "Cannot create namespace in readonly mode");
+        throw Exception(ErrorCodes::READONLY, "Cannot {} in readonly mode", action);
     if (!settings[Setting::allow_ddl])
-        throw Exception(ErrorCodes::QUERY_IS_PROHIBITED, "Cannot create namespace. DDL queries are prohibited for the user");
+        throw Exception(ErrorCodes::QUERY_IS_PROHIBITED, "Cannot {}. DDL queries are prohibited for the user", action);
+}
 
-    const auto body = readRequestBody(request, response, MAX_NAMESPACE_CREATE_BODY_SIZE);
+void IcebergRESTCatalogHandler::handleCreateNamespace(const IcebergRESTCatalogWarehouse & warehouse, HTTPServerRequest & request, HTTPServerResponse & response, const Context & context) const
+{
+    checkDDLAllowed(context, "create namespace");
+
+    const auto body = readRequestBody(request, response, MAX_REQUEST_BODY_SIZE);
     if (!body)
         return;
 
@@ -430,15 +439,8 @@ void IcebergRESTCatalogHandler::handleCreateNamespace(const IcebergRESTCatalogWa
             const auto properties_object = json->getObject("properties");
             if (!properties_object)
                 throw Poco::Exception("'properties' must be an object");
-            size_t properties_size = 0;
             for (const auto & [key, value] : *properties_object)
-            {
-                auto value_string = value.extract<String>();
-                properties_size += key.size() + value_string.size();
-                if (properties_size > MAX_NAMESPACE_PROPERTIES_SIZE)
-                    throw Poco::Exception(fmt::format("'properties' must be at most {} bytes in total", MAX_NAMESPACE_PROPERTIES_SIZE));
-                properties[key] = std::move(value_string);
-            }
+                properties[key] = value.extract<String>();
         }
     }
     catch (const Poco::Exception & e)
@@ -467,9 +469,79 @@ void IcebergRESTCatalogHandler::handleCreateNamespace(const IcebergRESTCatalogWa
         properties_json.set(key, value);
 
     Poco::JSON::Object result;
-    result.set("namespace", namespaceToJSON(name));
+    result.set("namespace", stringsToJSONArray(name));
     result.set("properties", properties_json);
     sendJSON(response, result, Poco::Net::HTTPResponse::HTTP_OK);
+}
+
+void IcebergRESTCatalogHandler::handleUpdateNamespaceProperties(const IcebergRESTCatalogWarehouse & warehouse, const IcebergRESTRouteMatch & match, HTTPServerRequest & request, HTTPServerResponse & response, const Context & context) const
+{
+    checkDDLAllowed(context, "update namespace properties");
+
+    const auto name = splitNamespace(match.path_params.at("namespace"));
+
+    const auto body = readRequestBody(request, response, MAX_REQUEST_BODY_SIZE);
+    if (!body)
+        return;
+
+    std::map<String, String> updates;
+    std::set<String> removals;
+    try
+    {
+        Poco::JSON::Parser parser;
+        const auto json = parser.parse(*body).extract<Poco::JSON::Object::Ptr>();
+
+        if (json->has("updates"))
+        {
+            const auto updates_object = json->getObject("updates");
+            if (!updates_object)
+                throw Poco::Exception("'updates' must be an object");
+            for (const auto & [key, value] : *updates_object)
+                updates[key] = value.extract<String>();
+        }
+
+        if (json->has("removals"))
+        {
+            const auto removals_array = json->getArray("removals");
+            if (!removals_array)
+                throw Poco::Exception("'removals' must be an array");
+            for (const auto & key : *removals_array)
+                removals.insert(key.extract<String>());
+        }
+    }
+    catch (const Poco::Exception & e)
+    {
+        sendError(
+            response,
+            Poco::Net::HTTPResponse::HTTP_BAD_REQUEST,
+            "BadRequestException",
+            fmt::format("Malformed update namespace properties request: {}", e.displayText()));
+        return;
+    }
+
+    const auto conflict = std::ranges::find_if(removals, [&](const auto & key) { return updates.contains(key); });
+    if (conflict != removals.end())
+    {
+        sendError(
+            response,
+            Poco::Net::HTTPResponse::HTTP_UNPROCESSABLE_ENTITY,
+            "UnprocessableEntityException",
+            fmt::format("Property key '{}' is in both 'updates' and 'removals'", *conflict));
+        return;
+    }
+
+    const auto result = warehouse.store->updateNamespaceProperties(name, updates, removals);
+    if (!result)
+    {
+        sendNoSuchNamespace(response, name);
+        return;
+    }
+
+    Poco::JSON::Object result_json;
+    result_json.set("updated", stringsToJSONArray(result->updated));
+    result_json.set("removed", stringsToJSONArray(result->removed));
+    result_json.set("missing", stringsToJSONArray(result->missing));
+    sendJSON(response, result_json, Poco::Net::HTTPResponse::HTTP_OK);
 }
 
 }
