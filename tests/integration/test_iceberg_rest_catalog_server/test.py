@@ -243,7 +243,6 @@ def test_update_namespace_properties(started_cluster):
         == b'{"b":"2","c":"3","owner":"bob"}'
     )
 
-    # Multi-level namespaces are addressed the same way as in HEAD.
     create_namespace([ns, "eu"], properties={"region": "eu"})
     response = update_namespace_properties([ns, "eu"], removals=["region"])
     assert response.json() == {"updated": [], "removed": ["region"], "missing": []}

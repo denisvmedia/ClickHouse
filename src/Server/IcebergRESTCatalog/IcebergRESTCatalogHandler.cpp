@@ -56,7 +56,7 @@ namespace
 constexpr size_t MAX_REQUEST_BODY_SIZE = 1_MiB;
 constexpr char NAMESPACE_LEVEL_SEPARATOR = '\x1F';
 
-/// The spec requires at least one level. The store checks the Keeper limits on depth and level length.
+/// The spec requires at least one level.
 void validateNamespace(const IcebergNamespaceName & name)
 {
     if (name.empty())

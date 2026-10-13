@@ -137,7 +137,6 @@ void KeeperIcebergRESTCatalogStore::initRoot(const zkutil::ZooKeeperPtr & zookee
 
 String KeeperIcebergRESTCatalogStore::namespacePath(const IcebergNamespaceName & name) const
 {
-    validateNamespace(name);
     String path = root_path;
     for (const auto & level : name)
         path += "/namespaces/" + escapeForFileName(level);
@@ -152,6 +151,7 @@ String KeeperIcebergRESTCatalogStore::childNamespacesPath(const IcebergNamespace
 bool KeeperIcebergRESTCatalogStore::createNamespace(const IcebergNamespaceName & name, const std::map<String, String> & properties)
 {
     auto component_guard = Coordination::setCurrentComponent("KeeperIcebergRESTCatalogStore::createNamespace");
+    validateNamespace(name);
     checkPropertiesSize(properties);
     auto zookeeper = getZooKeeper();
 
@@ -185,6 +185,7 @@ bool KeeperIcebergRESTCatalogStore::createNamespace(const IcebergNamespaceName &
 bool KeeperIcebergRESTCatalogStore::namespaceExists(const IcebergNamespaceName & name) const
 {
     auto component_guard = Coordination::setCurrentComponent("KeeperIcebergRESTCatalogStore::namespaceExists");
+    validateNamespace(name);
     return getZooKeeper()->exists(namespacePath(name));
 }
 
@@ -192,6 +193,7 @@ std::optional<UpdateNamespacePropertiesResult> KeeperIcebergRESTCatalogStore::up
     const IcebergNamespaceName & name, const std::map<String, String> & updates, const std::set<String> & removals)
 {
     auto component_guard = Coordination::setCurrentComponent("KeeperIcebergRESTCatalogStore::updateNamespaceProperties");
+    validateNamespace(name);
     auto zookeeper = getZooKeeper();
     const auto path = namespacePath(name);
 
@@ -235,6 +237,7 @@ std::optional<UpdateNamespacePropertiesResult> KeeperIcebergRESTCatalogStore::up
 std::vector<IcebergNamespaceName> KeeperIcebergRESTCatalogStore::listNamespaces(const IcebergNamespaceName & parent) const
 {
     auto component_guard = Coordination::setCurrentComponent("KeeperIcebergRESTCatalogStore::listNamespaces");
+    validateNamespace(parent);
     Strings children;
     const auto code = getZooKeeper()->tryGetChildren(childNamespacesPath(parent), children);
     if (code == Coordination::Error::ZNONODE)

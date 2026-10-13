@@ -44,7 +44,6 @@ public:
     bool namespaceExists(const IcebergNamespaceName & name) const;
 
     /// Applies `removals` first, then `updates`. Properties not named in the request stay unchanged.
-    /// Returns nullopt if the namespace does not exist.
     std::optional<UpdateNamespacePropertiesResult> updateNamespaceProperties(
         const IcebergNamespaceName & name, const std::map<String, String> & updates, const std::set<String> & removals);
 
@@ -57,7 +56,6 @@ private:
     /// Creates the root nodes and checks the format marker.
     void initRoot(const zkutil::ZooKeeperPtr & zookeeper) const;
 
-    /// Also checks the name against the Keeper limits.
     String namespacePath(const IcebergNamespaceName & name) const;
     /// Node that holds the direct children of `name`. Empty `name` means the root list.
     String childNamespacesPath(const IcebergNamespaceName & name) const;
