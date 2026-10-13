@@ -56,18 +56,10 @@ namespace
 constexpr size_t MAX_REQUEST_BODY_SIZE = 1_MiB;
 constexpr char NAMESPACE_LEVEL_SEPARATOR = '\x1F';
 
-/// The spec requires at least one level.
-void validateNamespace(const IcebergNamespaceName & name)
-{
-    if (name.empty())
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace must have at least one level");
-}
-
 IcebergNamespaceName splitNamespace(const String & value)
 {
     IcebergNamespaceName result;
     boost::split(result, value, [](char c) { return c == NAMESPACE_LEVEL_SEPARATOR; });
-    validateNamespace(result);
     return result;
 }
 
@@ -418,6 +410,8 @@ void IcebergRESTCatalogHandler::handleCreateNamespace(const IcebergRESTCatalogWa
         const auto namespace_array = json->getArray("namespace");
         if (!namespace_array)
             throw Poco::Exception("'namespace' must be an array");
+        if (namespace_array->size() == 0)
+            throw Poco::Exception("'namespace' must be non-empty");
 
         for (const auto & level : *namespace_array)
             name.push_back(level.extract<String>());
@@ -440,7 +434,6 @@ void IcebergRESTCatalogHandler::handleCreateNamespace(const IcebergRESTCatalogWa
             fmt::format("Malformed create namespace request: {}", e.displayText()));
         return;
     }
-    validateNamespace(name);
 
     if (!warehouse.store->createNamespace(name, properties))
     {
