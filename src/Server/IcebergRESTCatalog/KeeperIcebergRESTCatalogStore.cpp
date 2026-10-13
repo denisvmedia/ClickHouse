@@ -32,6 +32,24 @@ constexpr auto FORMAT_MARKER = "IcebergRESTCatalog\nformat_version: 1";
 
 constexpr size_t MAX_UPDATE_RETRIES = 10;
 
+/// Keeper limits path depth, node name length, and node data size. The handler maps `BAD_ARGUMENTS` to a 400 response.
+constexpr size_t MAX_NAMESPACE_LEVELS = 16;
+constexpr size_t MAX_NAMESPACE_LEVEL_LENGTH = 256;
+constexpr size_t MAX_NAMESPACE_PROPERTIES_SIZE = 64_KiB;
+
+void validateNamespace(const IcebergNamespaceName & name)
+{
+    if (name.size() > MAX_NAMESPACE_LEVELS)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace must have at most {} levels", MAX_NAMESPACE_LEVELS);
+    for (const auto & level : name)
+    {
+        if (level.empty())
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace levels must be non-empty");
+        if (level.size() > MAX_NAMESPACE_LEVEL_LENGTH)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace levels must be at most {} bytes", MAX_NAMESPACE_LEVEL_LENGTH);
+    }
+}
+
 String propertiesToJSON(const std::map<String, String> & properties)
 {
     Poco::JSON::Object json;
@@ -43,9 +61,6 @@ String propertiesToJSON(const std::map<String, String> & properties)
     Poco::JSON::Stringifier::stringify(json, oss);
     return oss.str();
 }
-
-/// Keeper limits node data size. The handler maps `BAD_ARGUMENTS` to a 400 response.
-constexpr size_t MAX_NAMESPACE_PROPERTIES_SIZE = 64_KiB;
 
 void checkPropertiesSize(const std::map<String, String> & properties)
 {
@@ -122,6 +137,7 @@ void KeeperIcebergRESTCatalogStore::initRoot(const zkutil::ZooKeeperPtr & zookee
 
 String KeeperIcebergRESTCatalogStore::namespacePath(const IcebergNamespaceName & name) const
 {
+    validateNamespace(name);
     String path = root_path;
     for (const auto & level : name)
         path += "/namespaces/" + escapeForFileName(level);

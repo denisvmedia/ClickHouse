@@ -54,25 +54,13 @@ namespace
 {
 
 constexpr size_t MAX_REQUEST_BODY_SIZE = 1_MiB;
-/// Keeper limits path depth. Reject oversized requests here with 400 instead of a Keeper error.
-constexpr size_t MAX_NAMESPACE_LEVELS = 16;
-constexpr size_t MAX_NAMESPACE_LEVEL_LENGTH = 256;
 constexpr char NAMESPACE_LEVEL_SEPARATOR = '\x1F';
 
-/// The handler maps `BAD_ARGUMENTS` to a 400 response.
+/// The spec requires at least one level. The store checks the Keeper limits on depth and level length.
 void validateNamespace(const IcebergNamespaceName & name)
 {
     if (name.empty())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace must have at least one level");
-    if (name.size() > MAX_NAMESPACE_LEVELS)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace must have at most {} levels", MAX_NAMESPACE_LEVELS);
-    for (const auto & level : name)
-    {
-        if (level.empty())
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace levels must be non-empty");
-        if (level.size() > MAX_NAMESPACE_LEVEL_LENGTH)
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Namespace levels must be at most {} bytes", MAX_NAMESPACE_LEVEL_LENGTH);
-    }
 }
 
 IcebergNamespaceName splitNamespace(const String & value)

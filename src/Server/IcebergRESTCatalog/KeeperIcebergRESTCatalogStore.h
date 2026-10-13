@@ -57,6 +57,7 @@ private:
     /// Creates the root nodes and checks the format marker.
     void initRoot(const zkutil::ZooKeeperPtr & zookeeper) const;
 
+    /// Also checks the name against the Keeper limits.
     String namespacePath(const IcebergNamespaceName & name) const;
     /// Node that holds the direct children of `name`. Empty `name` means the root list.
     String childNamespacesPath(const IcebergNamespaceName & name) const;
